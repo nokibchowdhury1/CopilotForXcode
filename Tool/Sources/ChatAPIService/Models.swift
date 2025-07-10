@@ -67,9 +67,9 @@ public struct ChatMessage: Equatable, Codable {
     public typealias ID = String
 
     public enum Role: String, Codable, Equatable {
-        case system
         case user
         case assistant
+        case system
     }
     
     /// The role of a message.
@@ -77,6 +77,9 @@ public struct ChatMessage: Equatable, Codable {
 
     /// The content of the message, either the chat message, or a result of a function call.
     public var content: String
+    
+    /// The attached image content of the message
+    public var contentImageReferences: [ImageReference]
 
     /// The id of the message.
     public var id: ID
@@ -99,12 +102,14 @@ public struct ChatMessage: Equatable, Codable {
     public var suggestedTitle: String?
 
     /// The error occurred during responding chat in server
-    public var errorMessage: String?
+    public var errorMessages: [String]
     
     /// The steps of conversation progress
     public var steps: [ConversationProgressStep]
     
     public var editAgentRounds: [AgentRound]
+    
+    public var panelMessages: [CopilotShowMessageParams]
     
     /// The timestamp of the message.
     public var createdAt: Date
@@ -116,28 +121,32 @@ public struct ChatMessage: Equatable, Codable {
         clsTurnID: String? = nil,
         role: Role,
         content: String,
+        contentImageReferences: [ImageReference] = [],
         references: [ConversationReference] = [],
         followUp: ConversationFollowUp? = nil,
         suggestedTitle: String? = nil,
-        errorMessage: String? = nil,
+        errorMessages: [String] = [],
         rating: ConversationRating = .unrated,
         steps: [ConversationProgressStep] = [],
         editAgentRounds: [AgentRound] = [],
+        panelMessages: [CopilotShowMessageParams] = [],
         createdAt: Date? = nil,
         updatedAt: Date? = nil
     ) {
         self.role = role
         self.content = content
+        self.contentImageReferences = contentImageReferences
         self.id = id
         self.chatTabID = chatTabID
         self.clsTurnID = clsTurnID
         self.references = references
         self.followUp = followUp
         self.suggestedTitle = suggestedTitle
-        self.errorMessage = errorMessage
+        self.errorMessages = errorMessages
         self.rating = rating
         self.steps = steps
         self.editAgentRounds = editAgentRounds
+        self.panelMessages = panelMessages
 
         let now = Date.now
         self.createdAt = createdAt ?? now

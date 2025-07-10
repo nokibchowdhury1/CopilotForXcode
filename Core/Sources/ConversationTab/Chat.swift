@@ -15,30 +15,45 @@ public struct DisplayedChatMessage: Equatable {
     public enum Role: Equatable {
         case user
         case assistant
-        case system
         case ignored
     }
 
     public var id: String
     public var role: Role
     public var text: String
+    public var imageReferences: [ImageReference] = []
     public var references: [ConversationReference] = []
     public var followUp: ConversationFollowUp? = nil
     public var suggestedTitle: String? = nil
-    public var errorMessage: String? = nil
+    public var errorMessages: [String] = []
     public var steps: [ConversationProgressStep] = []
     public var editAgentRounds: [AgentRound] = []
+    public var panelMessages: [CopilotShowMessageParams] = []
 
-    public init(id: String, role: Role, text: String, references: [ConversationReference] = [], followUp: ConversationFollowUp? = nil, suggestedTitle: String? = nil, errorMessage: String? = nil, steps: [ConversationProgressStep] = [], editAgentRounds: [AgentRound] = []) {
+    public init(
+        id: String,
+        role: Role,
+        text: String,
+        imageReferences: [ImageReference] = [],
+        references: [ConversationReference] = [],
+        followUp: ConversationFollowUp? = nil,
+        suggestedTitle: String? = nil,
+        errorMessages: [String] = [],
+        steps: [ConversationProgressStep] = [],
+        editAgentRounds: [AgentRound] = [],
+        panelMessages: [CopilotShowMessageParams] = []
+    ) {
         self.id = id
         self.role = role
         self.text = text
+        self.imageReferences = imageReferences
         self.references = references
         self.followUp = followUp
         self.suggestedTitle = suggestedTitle
-        self.errorMessage = errorMessage
+        self.errorMessages = errorMessages
         self.steps = steps
         self.editAgentRounds = editAgentRounds
+        self.panelMessages = panelMessages
     }
 }
 
@@ -62,6 +77,7 @@ struct Chat {
         var focusedField: Field?
         var currentEditor: FileReference? = nil
         var selectedFiles: [FileReference] = []
+        var attachedImages: [ImageReference] = []
         /// Cache the original content
         var fileEditMap: OrderedDictionary<URL, FileEdit> = [:]
         var diffViewerController: DiffViewWindowController? = nil
@@ -106,11 +122,15 @@ struct Chat {
 
         case chatMenu(ChatMenu.Action)
         
-        // context
+        // File context
         case addSelectedFile(FileReference)
         case removeSelectedFile(FileReference)
         case resetCurrentEditor
         case setCurrentEditor(FileReference)
+        
+        // Image context
+        case addSelectedImage(ImageReference)
+        case removeSelectedImage(ImageReference)
         
         case followUpButtonClicked(String, String)
         
@@ -137,6 +157,7 @@ struct Chat {
 
     @Dependency(\.openURL) var openURL
     @AppStorage(\.enableCurrentEditorContext) var enableCurrentEditorContext: Bool
+    @AppStorage(\.chatResponseLocale) var chatResponseLocale
 
     var body: some ReducerOf<Self> {
         BindingReducer()
@@ -179,8 +200,22 @@ struct Chat {
                 let selectedFiles = state.selectedFiles
                 let selectedModelFamily = AppState.shared.getSelectedModelFamily() ?? CopilotModelManager.getDefaultChatModel(scope: AppState.shared.modelScope())?.modelFamily
                 let agentMode = AppState.shared.isAgentModeEnabled()
+                
+                let shouldAttachImages = AppState.shared.isSelectedModelSupportVision() ?? CopilotModelManager.getDefaultChatModel(scope: AppState.shared.modelScope())?.supportVision ?? false
+                let attachedImages: [ImageReference] = shouldAttachImages ? state.attachedImages : []
+                state.attachedImages = []
                 return .run { _ in
-                    try await service.send(id, content: message, skillSet: skillSet, references: selectedFiles, model: selectedModelFamily, agentMode: agentMode)
+                    try await service
+                        .send(
+                            id,
+                            content: message,
+                            contentImageReferences: attachedImages,
+                            skillSet: skillSet,
+                            references: selectedFiles,
+                            model: selectedModelFamily,
+                            agentMode: agentMode,
+                            userLanguage: chatResponseLocale
+                        )
                 }.cancellable(id: CancelID.sendMessage(self.id))
             
             case let .toolCallAccepted(toolCallId):
@@ -209,7 +244,7 @@ struct Chat {
                 let selectedModelFamily = AppState.shared.getSelectedModelFamily() ?? CopilotModelManager.getDefaultChatModel(scope: AppState.shared.modelScope())?.modelFamily
                 
                 return .run { _ in
-                    try await service.send(id, content: message, skillSet: skillSet, references: selectedFiles, model: selectedModelFamily)
+                    try await service.send(id, content: message, skillSet: skillSet, references: selectedFiles, model: selectedModelFamily, userLanguage: chatResponseLocale)
                 }.cancellable(id: CancelID.sendMessage(self.id))
 
             case .returnButtonTapped:
@@ -343,12 +378,13 @@ struct Chat {
                         id: message.id,
                         role: {
                             switch message.role {
-                            case .system: return .system
                             case .user: return .user
                             case .assistant: return .assistant
+                            case .system: return .ignored
                             }
                         }(),
                         text: message.content,
+                        imageReferences: message.contentImageReferences,
                         references: message.references.map {
                             .init(
                                 uri: $0.uri,
@@ -358,9 +394,10 @@ struct Chat {
                         },
                         followUp: message.followUp,
                         suggestedTitle: message.suggestedTitle,
-                        errorMessage: message.errorMessage,
+                        errorMessages: message.errorMessages,
                         steps: message.steps,
-                        editAgentRounds: message.editAgentRounds
+                        editAgentRounds: message.editAgentRounds,
+                        panelMessages: message.panelMessages
                     ))
 
                     return all
@@ -430,6 +467,7 @@ struct Chat {
                  ChatInjector().insertCodeBlock(codeBlock: code)
                  return .none
 
+            // MARK: - File Context
             case let .addSelectedFile(fileReference):
                 guard !state.selectedFiles.contains(fileReference) else { return .none }
                 state.selectedFiles.append(fileReference)
@@ -443,6 +481,16 @@ struct Chat {
                 return .none
             case let .setCurrentEditor(fileReference):
                 state.currentEditor = fileReference
+                return .none
+                
+            // MARK: - Image Context
+            case let .addSelectedImage(imageReference):
+                guard !state.attachedImages.contains(imageReference) else { return .none }
+                state.attachedImages.append(imageReference)
+                return .none
+            case let .removeSelectedImage(imageReference):
+                guard let index = state.attachedImages.firstIndex(of: imageReference) else { return .none }
+                state.attachedImages.remove(at: index)
                 return .none
                 
             // MARK: - Agent Edits

@@ -11,10 +11,10 @@ import SwiftUIFlowLayout
 import XcodeInspector
 import ChatTab
 import Workspace
-import HostAppActivator
 import Persist
+import UniformTypeIdentifiers
 
-private let r: Double = 8
+private let r: Double = 4
 
 public struct ChatPanel: View {
     @Perception.Bindable var chat: StoreOf<Chat>
@@ -37,9 +37,7 @@ public struct ChatPanel: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel("Chat Messages Group")
                     
-                    if chat.history.last?.role == .system {
-                        ChatCLSError(chat: chat).padding(.trailing, 16)
-                    } else if (chat.history.last?.followUp) != nil {
+                    if let _ = chat.history.last?.followUp {
                         ChatFollowUp(chat: chat)
                             .padding(.trailing, 16)
                             .padding(.vertical, 8)
@@ -60,9 +58,46 @@ public struct ChatPanel: View {
             .onAppear {
                 chat.send(.appear)
             }
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                onFileDrop(providers)
+            }
         }
     }
+    
+    private func onFileDrop(_ providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
+                    let url: URL? = {
+                        if let data = item as? Data {
+                            return URL(dataRepresentation: data, relativeTo: nil)
+                        } else if let url = item as? URL {
+                            return url
+                        }
+                        return nil
+                    }()
+                    
+                    guard let url else { return }
+                    if let isValidFile = try? WorkspaceFile.isValidFile(url), isValidFile {
+                        DispatchQueue.main.async {
+                            let fileReference = FileReference(url: url, isCurrentEditor: false)
+                            chat.send(.addSelectedFile(fileReference))
+                        }
+                    } else if let data = try? Data(contentsOf: url),
+                        ["png", "jpeg", "jpg", "bmp", "gif", "tiff", "tif", "webp"].contains(url.pathExtension.lowercased()) {
+                        DispatchQueue.main.async {
+                            chat.send(.addSelectedImage(ImageReference(data: data, fileUrl: url)))
+                        }
+                    }
+                }
+            }
+        }
+        
+        return true
+    }
 }
+
+
 
 private struct ScrollViewOffsetPreferenceKey: PreferenceKey {
     static var defaultValue = CGFloat.zero
@@ -334,20 +369,24 @@ struct ChatHistoryItem: View {
             let text = message.text
             switch message.role {
             case .user:
-                UserMessage(id: message.id, text: text, chat: chat)
+                UserMessage(
+                    id: message.id,
+                    text: text,
+                    imageReferences: message.imageReferences,
+                    chat: chat
+                )
             case .assistant:
                 BotMessage(
                     id: message.id,
                     text: text,
                     references: message.references,
                     followUp: message.followUp,
-                    errorMessage: message.errorMessage,
+                    errorMessages: message.errorMessages,
                     chat: chat,
                     steps: message.steps,
-                    editAgentRounds: message.editAgentRounds
+                    editAgentRounds: message.editAgentRounds,
+                    panelMessages: message.panelMessages
                 )
-            case .system:
-                FunctionMessage(chat: chat, id: message.id, text: text)
             case .ignored:
                 EmptyView()
             }
@@ -460,7 +499,7 @@ struct ChatPanelInputArea: View {
         var focusedField: FocusState<Chat.State.Field?>.Binding
         @State var cancellable = Set<AnyCancellable>()
         @State private var isFilePickerPresented = false
-        @State private var allFiles: [FileReference] = []
+        @State private var allFiles: [FileReference]? = nil
         @State private var filteredTemplates: [ChatTemplate] = []
         @State private var filteredAgent: [ChatAgent] = []
         @State private var showingTemplates = false
@@ -479,6 +518,7 @@ struct ChatPanelInputArea: View {
                     if isFilePickerPresented {
                         FilePicker(
                             allFiles: $allFiles,
+                            workspaceURL: chat.workspaceURL,
                             onSubmit: { file in
                                 chat.send(.addSelectedFile(file))
                             },
@@ -488,8 +528,12 @@ struct ChatPanelInputArea: View {
                             }
                         )
                         .onAppear() {
-                            allFiles = ContextUtils.getFilesInActiveWorkspace(workspaceURL: chat.workspaceURL)
+                            allFiles = ContextUtils.getFilesFromWorkspaceIndex(workspaceURL: chat.workspaceURL)
                         }
+                    }
+                    
+                    if !chat.state.attachedImages.isEmpty {
+                        ImagesScrollView(chat: chat)
                     }
                     
                     ZStack(alignment: .topLeading) {
@@ -516,8 +560,7 @@ struct ChatPanelInputArea: View {
                                         submitChatMessage()
                                     }
                                     dropDownShowingType = nil
-                                },
-                                completions: chatAutoCompletion
+                                }
                             )
                             .focused(focusedField, equals: .textField)
                             .bind($chat.focusedField, to: focusedField)
@@ -639,10 +682,10 @@ struct ChatPanelInputArea: View {
             }
         }
         
-        enum ChatContextButtonType { case mcpConfig, contextAttach}
+        enum ChatContextButtonType { case imageAttach, contextAttach}
         
         private var chatContextView: some View {
-            let buttonItems: [ChatContextButtonType] = chat.isAgentMode ? [.mcpConfig, .contextAttach] : [.contextAttach]
+            let buttonItems: [ChatContextButtonType] = [.contextAttach, .imageAttach]
             let currentEditorItem: [FileReference] = [chat.state.currentEditor].compactMap {
                 $0
             }
@@ -652,25 +695,8 @@ struct ChatPanelInputArea: View {
             } + currentEditorItem + selectedFileItems
             return FlowLayout(mode: .scrollable, items: chatContextItems, itemSpacing: 4) { item in
                 if let buttonType = item as? ChatContextButtonType {
-                    if buttonType == .mcpConfig {
-                        // MCP Settings button
-                        Button(action: {
-                            try? launchHostAppMCPSettings()
-                        }) {
-                            Image(systemName: "wrench.and.screwdriver")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 16, height: 16)
-                                .foregroundColor(.primary.opacity(0.85))
-                                .padding(4)
-                        }
-                        .buttonStyle(HoverButtonStyle(padding: 0))
-                        .help("Configure your MCP server")
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: r)
-                                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                        )
+                    if buttonType == .imageAttach {
+                        VisionMenuView(chat: chat)
                     } else if buttonType == .contextAttach {
                         // File picker button
                         Button(action: {
@@ -681,25 +707,17 @@ struct ChatPanelInputArea: View {
                                 }
                             }
                         }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "paperclip")
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: 16, height: 16)
-                                    .foregroundColor(.primary.opacity(0.85))
-                                Text("Add Context...")
-                                    .foregroundColor(.primary.opacity(0.85))
-                                    .lineLimit(1)
-                            }
-                            .padding(4)
+                            Image(systemName: "paperclip")
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 16, height: 16)
+                                .padding(4)
+                                .foregroundColor(.primary.opacity(0.85))
+                                .font(Font.system(size: 11, weight: .semibold))
                         }
                         .buttonStyle(HoverButtonStyle(padding: 0))
                         .help("Add Context")
                         .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: r)
-                                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                        )
                     }
                 } else if let select = item as? FileReference {
                     HStack(spacing: 0) {
@@ -709,6 +727,7 @@ struct ChatPanelInputArea: View {
                             .frame(width: 16, height: 16)
                             .foregroundColor(.primary.opacity(0.85))
                             .padding(4)
+                            .opacity(select.isCurrentEditor && !isCurrentEditorContextEnabled ? 0.4 : 1.0)
 
                         Text(select.url.lastPathComponent)
                             .lineLimit(1)
@@ -718,66 +737,36 @@ struct ChatPanelInputArea: View {
                                 ? .secondary
                                 : .primary.opacity(0.85)
                             )
-                            .font(select.isCurrentEditor && !isCurrentEditorContextEnabled
-                                  ? .body.italic()
-                                  : .body
-                            )
+                            .font(.body)
+                            .opacity(select.isCurrentEditor && !isCurrentEditorContextEnabled ? 0.4 : 1.0)
                             .help(select.getPathRelativeToHome())
                         
                         if select.isCurrentEditor {
-                            Text("Current file")
-                                .foregroundStyle(.secondary)
-                                .font(select.isCurrentEditor && !isCurrentEditorContextEnabled
-                                      ? .callout.italic()
-                                      : .callout
-                                )
-                                .padding(.leading, 4)
-                        }
-
-                        Button(action: {
-                            if select.isCurrentEditor {
-                                enableCurrentEditorContext.toggle()
-                                isCurrentEditorContextEnabled = enableCurrentEditorContext
-                            } else {
-                                chat.send(.removeSelectedFile(select))
-                            }
-                        }) {
-                            if select.isCurrentEditor {
-                                if isCurrentEditorContextEnabled {
-                                    Image("Eye")
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(width: 16, height: 16)
-                                        .foregroundColor(.secondary)
-                                        .help("Disable current file context")
-                                } else {
-                                    Image("EyeClosed")
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(width: 16, height: 16)
-                                        .foregroundColor(.secondary)
-                                        .help("Enable current file context")
+                            Toggle("", isOn: $isCurrentEditorContextEnabled)
+                                .toggleStyle(SwitchToggleStyle(tint: .blue))
+                                .controlSize(.mini)
+                                .padding(.trailing, 4)
+                                .onChange(of: isCurrentEditorContextEnabled) { newValue in
+                                    enableCurrentEditorContext = newValue
                                 }
-                            } else {
+                        } else {
+                            Button(action: { chat.send(.removeSelectedFile(select)) }) {
                                 Image(systemName: "xmark")
                                     .resizable()
                                     .frame(width: 8, height: 8)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(.primary.opacity(0.85))
                                     .padding(4)
                             }
+                            .buttonStyle(HoverButtonStyle())
                         }
-                        .buttonStyle(HoverButtonStyle())
                     }
-                    .cornerRadius(6)
+                    .background(
+                        Color(nsColor: .windowBackgroundColor).opacity(0.5)
+                    )
+                    .cornerRadius(select.isCurrentEditor ? 99 : r)
                     .overlay(
-                        RoundedRectangle(cornerRadius: r)
-                            .stroke(
-                                Color(nsColor: .separatorColor),
-                                style: .init(
-                                    lineWidth: 1,
-                                    dash: select.isCurrentEditor && !isCurrentEditorContextEnabled ? [4, 2] : []
-                                )
-                            )
+                        RoundedRectangle(cornerRadius: select.isCurrentEditor ? 99 : r)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
                     )
                 }
             }
@@ -800,11 +789,7 @@ struct ChatPanelInputArea: View {
             if !chat.isAgentMode {
                 promptTemplates = await SharedChatService.shared.loadChatTemplates() ?? []
             }
-            
-            guard !promptTemplates.isEmpty else {
-                return [releaseNotesTemplate]
-            }
-            
+
             let templates = promptTemplates + [releaseNotesTemplate]
             let skippedTemplates = [ "feedback", "help" ]
             
@@ -831,29 +816,6 @@ struct ChatPanelInputArea: View {
             return chatAgents.filter { $0.slug.hasPrefix(prefix) && includedAgents.contains($0.slug) }
         }
 
-        func chatAutoCompletion(text: String, proposed: [String], range: NSRange) -> [String] {
-            guard text.count == 1 else { return [] }
-            let plugins = [String]() // chat.pluginIdentifiers.map { "/\($0)" }
-            let availableFeatures = plugins + [
-//                "/exit",
-                "@code",
-                "@sense",
-                "@project",
-                "@web",
-            ]
-
-            let result: [String] = availableFeatures
-                .filter { $0.hasPrefix(text) && $0 != text }
-                .compactMap {
-                    guard let index = $0.index(
-                        $0.startIndex,
-                        offsetBy: range.location,
-                        limitedBy: $0.endIndex
-                    ) else { return nil }
-                    return String($0[index...])
-                }
-            return result
-        }
         func subscribeToActiveDocumentChangeEvent() {
             Publishers.CombineLatest(
                 XcodeInspector.shared.$latestActiveXcode,

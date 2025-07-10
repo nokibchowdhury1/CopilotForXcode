@@ -13,7 +13,6 @@ public extension ChatMemory {
         await mutateHistory { history in
             if let index = history.firstIndex(where: { $0.id == message.id }) {
                 history[index].mergeMessage(with: message)
-                
             } else {
                 history.append(message)
             }
@@ -50,9 +49,9 @@ extension ChatMessage {
         self.suggestedTitle = message.suggestedTitle ?? self.suggestedTitle
         
         // merge error message
-        if let errorMessage = message.errorMessage {
-            self.errorMessage = (self.errorMessage ?? "") + errorMessage
-        }
+        self.errorMessages = self.errorMessages + message.errorMessages
+        
+        self.panelMessages = self.panelMessages + message.panelMessages
         
         // merge steps
         if !message.steps.isEmpty {

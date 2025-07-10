@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import XcodeInspector
 
 public struct WidgetLocation: Equatable {
     struct PanelLocation: Equatable {
@@ -319,14 +320,40 @@ enum UpdateLocationStrategy {
         return selectionFrame
     }
     
-    static func getChatPanelFrame(_ screen: NSScreen) -> CGRect {
+    static func getChatPanelFrame(_ screen: NSScreen? = nil) -> CGRect {
+        let screen = screen ??  NSScreen.main ?? NSScreen.screens.first!
+        
         let visibleScreenFrame = screen.visibleFrame
-        // avoid too wide
+        
+        // Default Frame
         let width = min(Style.panelWidth, visibleScreenFrame.width * 0.3)
         let height = visibleScreenFrame.height
-        let x = visibleScreenFrame.width - width
-                
-        return CGRect(x: x, y: visibleScreenFrame.height, width: width, height: height)
+        let x = visibleScreenFrame.maxX - width
+        let y = visibleScreenFrame.minY
+        
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+    
+    static func getAttachedChatPanelFrame(_ screen: NSScreen, workspaceWindowElement: AXUIElement) -> CGRect {
+        guard let xcodeScreen = workspaceWindowElement.maxIntersectionScreen,
+              let xcodeRect = workspaceWindowElement.rect,
+              let mainDisplayScreen = NSScreen.screens.first(where: { $0.frame.origin == .zero })
+        else {
+            return getChatPanelFrame()
+        }
+        
+        let minWidth = Style.minChatPanelWidth
+        let visibleXcodeScreenFrame = xcodeScreen.visibleFrame
+        
+        let width = max(visibleXcodeScreenFrame.maxX - xcodeRect.maxX, minWidth)
+        let height = xcodeRect.height
+        let x = visibleXcodeScreenFrame.maxX - width
+        
+        // AXUIElement coordinates: Y=0 at top-left
+        // NSWindow coordinates: Y=0 at bottom-left
+        let y = mainDisplayScreen.frame.maxY - xcodeRect.maxY + mainDisplayScreen.frame.minY
+        
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 }
 

@@ -116,6 +116,11 @@ public struct UserDefaultPreferenceKeys {
         defaultValue: false,
         key: "ExtensionPermissionShown"
     )
+    
+    public let capturePermissionShown = PreferenceKey(
+        defaultValue: false,
+        key: "CapturePermissionShown"
+    )
 }
 
 // MARK: - Prompt to Code
@@ -294,6 +299,18 @@ public extension UserDefaultPreferenceKeys {
 
     var enableCurrentEditorContext: PreferenceKey<Bool> {
         .init(defaultValue: true, key: "EnableCurrentEditorContext")
+    }
+    
+    var chatResponseLocale: PreferenceKey<String> {
+        .init(defaultValue: "en", key: "ChatResponseLocale")
+    }
+
+    var globalCopilotInstructions: PreferenceKey<String> {
+        .init(defaultValue: "", key: "GlobalCopilotInstructions")
+    }
+    
+    var autoAttachChatToXcode: PreferenceKey<Bool> {
+        .init(defaultValue: true, key: "AutoAttachChatToXcode")
     }
 }
 

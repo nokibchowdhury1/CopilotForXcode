@@ -3,6 +3,7 @@ import ChatTab
 import ComposableArchitecture
 import Foundation
 import SwiftUI
+import ConversationTab
 
 final class ChatPanelWindow: NSWindow {
     override var canBecomeKey: Bool { true }
@@ -76,6 +77,13 @@ final class ChatPanelWindow: NSWindow {
                 }
             }
         }
+        
+        setInitialFrame()
+    }
+    
+    private func setInitialFrame() {
+        let frame = UpdateLocationStrategy.getChatPanelFrame()
+        setFrame(frame, display: false, animate: true)
     }
 
     func setFloatOnTop(_ isFloatOnTop: Bool) {

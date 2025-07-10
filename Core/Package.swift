@@ -180,7 +180,9 @@ let package = Package(
                     .product(name: "ConversationServiceProvider", package: "Tool"),
                     .product(name: "GitHubCopilotService", package: "Tool"),
                     .product(name: "Workspace", package: "Tool"),
-                    .product(name: "Terminal", package: "Tool")
+                    .product(name: "Terminal", package: "Tool"),
+                    .product(name: "SystemUtils", package: "Tool"),
+                    .product(name: "AppKitExtension", package: "Tool")
                 ]),
             .testTarget(
                 name: "ChatServiceTests",

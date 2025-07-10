@@ -17,6 +17,9 @@ actor WidgetWindowsController: NSObject {
     nonisolated let chatTabPool: ChatTabPool
 
     var currentApplicationProcessIdentifier: pid_t?
+    
+    weak var currentXcodeApp: XcodeAppInstanceInspector?
+    weak var previousXcodeApp: XcodeAppInstanceInspector?
 
     var cancellable: Set<AnyCancellable> = []
     var observeToAppTask: Task<Void, Error>?
@@ -84,6 +87,12 @@ private extension WidgetWindowsController {
             if app.isXcode {
                 updateWindowLocation(animated: false, immediately: true)
                 updateWindowOpacity(immediately: false)
+                
+                if let xcodeApp = app as? XcodeAppInstanceInspector {
+                    previousXcodeApp = currentXcodeApp ?? xcodeApp
+                    currentXcodeApp = xcodeApp
+                }
+                
             } else {
                 updateWindowOpacity(immediately: true)
                 updateWindowLocation(animated: false, immediately: false)
@@ -142,13 +151,14 @@ private extension WidgetWindowsController {
                     await updateWidgetsAndNotifyChangeOfEditor(immediately: false)
                 case .mainWindowChanged:
                     await updateWidgetsAndNotifyChangeOfEditor(immediately: false)
-                case .moved,
-                     .resized,
-                     .windowMoved,
-                     .windowResized,
-                     .windowMiniaturized,
-                     .windowDeminiaturized:
+                case .windowMiniaturized, .windowDeminiaturized:
                     await updateWidgets(immediately: false)
+                case .resized,
+                    .moved,
+                    .windowMoved,
+                    .windowResized:
+                    await updateWidgets(immediately: false)
+                    await updateAttachedChatWindowLocation(notification)
                 case .created, .uiElementDestroyed, .xcodeCompletionPanelChanged,
                      .applicationDeactivated:
                     continue
@@ -339,8 +349,7 @@ extension WidgetWindowsController {
     
     // Generate a default location when no workspace is opened
     private func generateDefaultLocation() -> WidgetLocation {
-        let mainScreen = NSScreen.main ?? NSScreen.screens.first!
-        let chatPanelFrame = UpdateLocationStrategy.getChatPanelFrame(mainScreen)
+        let chatPanelFrame = UpdateLocationStrategy.getChatPanelFrame()
         
         return WidgetLocation(
             widgetFrame: .zero,
@@ -444,6 +453,57 @@ extension WidgetWindowsController {
 
         updateWindowOpacityTask = task
     }
+    
+    @MainActor
+    func updateAttachedChatWindowLocation(_ notif: XcodeAppInstanceInspector.AXNotification? = nil) async {
+        guard let currentXcodeApp = (await currentXcodeApp),
+              let currentFocusedWindow = currentXcodeApp.appElement.focusedWindow,
+              let currentXcodeScreen = currentXcodeApp.appScreen,
+              let currentXcodeRect = currentFocusedWindow.rect,
+              let notif = notif
+        else { return }
+        
+        if let previousXcodeApp = (await previousXcodeApp),
+           currentXcodeApp.processIdentifier == previousXcodeApp.processIdentifier {
+            if currentFocusedWindow.isFullScreen == true {
+                return
+            }
+        }
+        
+        let isAttachedToXcodeEnabled = UserDefaults.shared.value(for: \.autoAttachChatToXcode)
+        guard isAttachedToXcodeEnabled else { return }
+        
+        guard notif.element.isXcodeWorkspaceWindow else { return }
+        
+        let state = store.withState { $0 }
+        if state.chatPanelState.isPanelDisplayed && !windows.chatPanelWindow.isWindowHidden {
+            var frame = UpdateLocationStrategy.getAttachedChatPanelFrame(
+                NSScreen.main ?? NSScreen.screens.first!, 
+                workspaceWindowElement: notif.element
+            )
+            
+            let screenMaxX = currentXcodeScreen.visibleFrame.maxX
+            if screenMaxX - currentXcodeRect.maxX < Style.minChatPanelWidth
+            {
+                if let previousXcodeRect = (await previousXcodeApp?.appElement.focusedWindow?.rect),
+                   screenMaxX - previousXcodeRect.maxX < Style.minChatPanelWidth
+                {
+                    let isSameScreen = currentXcodeScreen.visibleFrame.intersects(windows.chatPanelWindow.frame)
+                    // Only update y and height
+                    frame = .init(
+                        x: isSameScreen ? windows.chatPanelWindow.frame.minX : frame.minX,
+                        y: frame.minY,
+                        width: isSameScreen ? windows.chatPanelWindow.frame.width : frame.width,
+                        height: frame.height
+                    )
+                }
+            }
+            
+            windows.chatPanelWindow.setFrame(frame, display: true, animate: true)
+            
+            await adjustChatPanelWindowLevel()
+        }
+    }
 
     func updateWindowLocation(
         animated: Bool,
@@ -481,8 +541,11 @@ extension WidgetWindowsController {
                     animate: animated
                 )
             }
-
-            if isChatPanelDetached {
+            
+            let isAttachedToXcodeEnabled = UserDefaults.shared.value(for: \.autoAttachChatToXcode)
+            if isAttachedToXcodeEnabled {
+                // update in `updateAttachedChatWindowLocation`
+            } else if isChatPanelDetached {
                 // don't update it!
             } else {
                 windows.chatPanelWindow.setFrame(
@@ -523,10 +586,10 @@ extension WidgetWindowsController {
 
     @MainActor
     func adjustChatPanelWindowLevel() async {
+        let window = windows.chatPanelWindow
+        
         let disableFloatOnTopWhenTheChatPanelIsDetached = UserDefaults.shared
             .value(for: \.disableFloatOnTopWhenTheChatPanelIsDetached)
-
-        let window = windows.chatPanelWindow
         guard disableFloatOnTopWhenTheChatPanelIsDetached else {
             window.setFloatOnTop(true)
             return
@@ -549,7 +612,7 @@ extension WidgetWindowsController {
         } else {
             false
         }
-
+        
         if !floatOnTopWhenOverlapsXcode || !latestAppIsXcodeOrExtension {
             window.setFloatOnTop(false)
         } else {

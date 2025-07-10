@@ -7,6 +7,8 @@ import SwiftUI
 import SharedUIComponents
 import GitHubCopilotViewModel
 import Status
+import ChatService
+import Workspace
 
 private let r: Double = 8
 
@@ -20,7 +22,7 @@ struct ChatWindowView: View {
         WithPerceptionTracking {
             // Force re-evaluation when workspace state changes
             let currentWorkspace = store.currentChatWorkspace
-            let selectedTabId = currentWorkspace?.selectedTabId
+            let _ = currentWorkspace?.selectedTabId
             ZStack {
                 if statusObserver.observedAXStatus == .notGranted {
                     ChatNoAXPermissionView()
@@ -38,8 +40,8 @@ struct ChatWindowView: View {
                         ChatLoginView(viewModel: GitHubCopilotViewModel.shared)
                     case .notAuthorized:
                         ChatNoSubscriptionView(viewModel: GitHubCopilotViewModel.shared)
-                    default:
-                        ChatLoadingView()
+                    case .unknown:
+                        ChatLoginView(viewModel: GitHubCopilotViewModel.shared)
                     }
                 }
             }
@@ -141,6 +143,7 @@ struct ChatLoadingView: View {
 struct ChatTitleBar: View {
     let store: StoreOf<ChatPanelFeature>
     @State var isHovering = false
+    @AppStorage(\.autoAttachChatToXcode) var autoAttachChatToXcode
 
     var body: some View {
         WithPerceptionTracking {
@@ -167,18 +170,20 @@ struct ChatTitleBar: View {
 
                 Spacer()
 
-                TrafficLightButton(
-                    isHovering: isHovering,
-                    isActive: store.isDetached,
-                    color: Color(nsColor: .systemCyan),
-                    action: {
-                        store.send(.toggleChatPanelDetachedButtonClicked)
+                if !autoAttachChatToXcode {
+                    TrafficLightButton(
+                        isHovering: isHovering,
+                        isActive: store.isDetached,
+                        color: Color(nsColor: .systemCyan),
+                        action: {
+                            store.send(.toggleChatPanelDetachedButtonClicked)
+                        }
+                    ) {
+                        Image(systemName: "pin.fill")
+                            .foregroundStyle(.black.opacity(0.5))
+                            .font(Font.system(size: 6).weight(.black))
+                            .transformEffect(.init(translationX: 0, y: 0.5))
                     }
-                ) {
-                    Image(systemName: "pin.fill")
-                        .foregroundStyle(.black.opacity(0.5))
-                        .font(Font.system(size: 6).weight(.black))
-                        .transformEffect(.init(translationX: 0, y: 0.5))
                 }
             }
             .buttonStyle(.plain)
@@ -248,7 +253,7 @@ struct ChatBar: View {
     var body: some View {
         WithPerceptionTracking {
             HStack(spacing: 0) {
-                if let name = store.chatHistory.selectedWorkspaceName {
+                if store.chatHistory.selectedWorkspaceName != nil {
                     ChatWindowHeader(store: store)
                 }
 
@@ -416,6 +421,7 @@ struct ChatTabBarButton<Content: View, Icon: View>: View {
 struct ChatTabContainer: View {
     let store: StoreOf<ChatPanelFeature>
     @Environment(\.chatTabPool) var chatTabPool
+    @State private var pasteMonitor: Any?
 
     var body: some View {
         WithPerceptionTracking {
@@ -433,6 +439,12 @@ struct ChatTabContainer: View {
                 // Fallback view for empty state (rarely seen in practice)
                 EmptyView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .onAppear {
+            setupPasteMonitor()
+        }
+        .onDisappear {
+            removePasteMonitor()
         }
     }
 
@@ -458,6 +470,39 @@ struct ChatTabContainer: View {
                 }
             }
         }
+    }
+    
+    private func setupPasteMonitor() {
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.contains(.command),
+                  event.charactersIgnoringModifiers?.lowercased() == "v" else {
+                return event
+            }
+            
+            // Find the active chat tab and forward paste event to it
+            if let activeConversationTab = getActiveConversationTab() {
+                if !activeConversationTab.handlePasteEvent() {
+                    return event
+                }
+            }
+            
+            return nil
+        }
+    }
+    
+    private func removePasteMonitor() {
+        if let monitor = pasteMonitor {
+            NSEvent.removeMonitor(monitor)
+            pasteMonitor = nil
+        }
+    }
+    
+    private func getActiveConversationTab() -> ConversationTab? {
+        guard let selectedTabId = store.currentChatWorkspace?.selectedTabId,
+              let chatTab = chatTabPool.getTab(of: selectedTabId) as? ConversationTab else {
+            return nil
+        }
+        return chatTab
     }
 }
 
@@ -499,7 +544,7 @@ struct ChatWindowView_Previews: PreviewProvider {
                                 .init(id: "7", title: "Empty-7", workspacePath: "path", username: "username"),
                             ] as IdentifiedArray<String, ChatTabInfo>,
                             selectedTabId: "2"
-                        )
+                        ) { _ in }
                     ] as IdentifiedArray<WorkspaceIdentifier, ChatWorkspace>,
                     selectedWorkspacePath: "activeWorkspacePath",
                     selectedWorkspaceName: "activeWorkspacePath"

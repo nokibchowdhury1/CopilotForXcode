@@ -51,7 +51,7 @@ public struct GitHubCopilotCodeSuggestion: Codable, Equatable {
     public var displayText: String
 }
 
-public func editorConfiguration() -> JSONValue {
+public func editorConfiguration(includeMCP: Bool) -> JSONValue {
     var proxyAuthorization: String? {
         let username = UserDefaults.shared.value(for: \.gitHubCopilotProxyUsername)
         if username.isEmpty { return nil }
@@ -87,14 +87,22 @@ public func editorConfiguration() -> JSONValue {
         let mcpConfig = UserDefaults.shared.value(for: \.gitHubCopilotMCPConfig)
         return JSONValue.string(mcpConfig)
     }
-    
+
+    var customInstructions: JSONValue? {
+        let instructions = UserDefaults.shared.value(for: \.globalCopilotInstructions)
+        return .string(instructions)
+    }
+
     var d: [String: JSONValue] = [:]
     if let http { d["http"] = http }
     if let authProvider { d["github-enterprise"] = authProvider }
-    if let mcp { 
+    if (includeMCP && mcp != nil) || customInstructions != nil {
         var github: [String: JSONValue] = [:]
         var copilot: [String: JSONValue] = [:]
-        copilot["mcp"] = mcp
+        if includeMCP {
+            copilot["mcp"] = mcp
+        }
+        copilot["globalCopilotInstructions"] = customInstructions
         github["copilot"] = .hash(copilot)
         d["github"] = .hash(github)
     }
@@ -125,6 +133,14 @@ enum GitHubCopilotRequest {
 
         var request: ClientRequest {
             .custom("checkStatus", .hash([:]))
+        }
+    }
+    
+    struct CheckQuota: GitHubCopilotRequestType {
+        typealias Response = GitHubCopilotQuotaInfo
+
+        var request: ClientRequest {
+            .custom("checkQuota", .hash([:]))
         }
     }
 

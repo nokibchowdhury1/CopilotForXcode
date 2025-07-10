@@ -19,11 +19,29 @@ public final class GitHubCopilotConversationService: ConversationServiceType {
             WorkspaceFolder(uri: project.uri, name: project.name)
         }
     }
+    
+    private func getMessageContent(_ request: ConversationRequest) -> MessageContent {
+        let contentImages = request.contentImages
+        let message: MessageContent
+        if contentImages.count > 0 {
+            var chatCompletionContentParts: [ChatCompletionContentPart] = contentImages.map {
+                .imageUrl($0)
+            }
+            chatCompletionContentParts.append(.text(ChatCompletionContentPartText(text: request.content)))
+            message = .messageContentArray(chatCompletionContentParts)
+        } else {
+            message = .string(request.content)
+        }
+        
+        return message
+    }
 
     public func createConversation(_ request: ConversationRequest, workspace: WorkspaceInfo) async throws {
         guard let service = await serviceLocator.getService(from: workspace) else { return }
         
-        return try await service.createConversation(request.content,
+        let message = getMessageContent(request)
+        
+        return try await service.createConversation(message,
                                                     workDoneToken: request.workDoneToken,
                                                     workspaceFolder: workspace.projectURL.absoluteString,
                                                     workspaceFolders: getWorkspaceFolders(workspace: workspace),
@@ -33,15 +51,19 @@ public final class GitHubCopilotConversationService: ConversationServiceType {
                                                     references: request.references ?? [],
                                                     model: request.model,
                                                     turns: request.turns,
-                                                    agentMode: request.agentMode)
+                                                    agentMode: request.agentMode,
+                                                    userLanguage: request.userLanguage)
     }
     
     public func createTurn(with conversationId: String, request: ConversationRequest, workspace: WorkspaceInfo) async throws {
         guard let service = await serviceLocator.getService(from: workspace) else { return }
         
-        return try await service.createTurn(request.content,
+        let message = getMessageContent(request)
+        
+        return try await service.createTurn(message,
                                             workDoneToken: request.workDoneToken,
                                             conversationId: conversationId,
+                                            turnId: request.turnId,
                                             activeDoc: request.activeDoc,
                                             ignoredSkills: request.ignoredSkills,
                                             references: request.references ?? [],
